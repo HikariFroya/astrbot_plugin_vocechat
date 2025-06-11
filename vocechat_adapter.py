@@ -1,5 +1,6 @@
 # vocechat_adapter.py
 import asyncio
+from io import BytesIO
 import json
 from typing import Dict, Any, Optional
 from urllib.parse import quote_plus 
@@ -286,14 +287,21 @@ class VoceChatAdapter(Platform):
                     data_to_send = content_to_send.encode('utf-8')
                     logger.debug(f"VoceChat '{self.metadata.id}': 发送 {desc_type} '{content_to_send[:50]}...' 到 {target_id_str} ({comp_desc})")
                 elif isinstance(component, Image):
-                    if component.file and component.file.startswith("base64://"):
-                        pure_base64_data = component.file.split("base64://", 1)[1]; mime_type = "image/png" ; original_filename = "image.png" # 默认值
+                    if component.file:
+                        guessed_mime, original_filename, mime_type, buffer = "image/png", "image.png", None, None
                         if hasattr(component, 'path') and component.path: original_filename = os.path.basename(component.path)
                         guessed_mime, _ = mimetypes.guess_type(original_filename)
                         if guessed_mime: mime_type = guessed_mime
-                        data_url_for_voce = f"data:{mime_type};base64,{pure_base64_data}"
-                        request_headers["Content-Type"] = "vocechat/file"; data_to_send = json.dumps({"archive_id": data_url_for_voce }).encode('utf-8')
-                        logger.debug(f"VoceChat '{self.metadata.id}': 发送图片 (vocechat/file, archive_id) 到 {target_id_str} ({comp_desc})")
+                        if component.file.startswith("base64://"): # 获取 bytes
+                            pure_base64_data = component.file.split("base64://", 1)[1]
+                            buffer = base64.b64decode(pure_base64_data)
+                        elif component.path and component.file.startswith("file://"):
+                            with open(component.path, 'rb') as file:
+                                buffer = file.read()
+                        else: logger.warning(f"'{self.metadata.id}' Image组件无有效file. ({comp_desc})"); continue
+                        file_id = await self.file_prepare(os.path.basename(component.path), mime_type) # 准备文件上传
+                        file_path = await self.upload_file(file_id, buffer) # 上传文件
+                        request_headers["Content-Type"] = "vocechat/file"; data_to_send = json.dumps({"path": file_path }).encode('utf-8')
                     elif component.url and component.url.startswith("http"): 
                         logger.debug(f"VoceChat '{self.metadata.id}': 发送图片 (Markdown链接: ![]({component.url[:100]}...)) 到 {target_id_str} ({comp_desc})")
                         request_headers["Content-Type"] = "text/markdown"; data_to_send = f"![]({component.url})".encode('utf-8')
@@ -326,3 +334,22 @@ class VoceChatAdapter(Platform):
         await self.shutdown_server_resources()
         logger.info(f"VoceChatAdapter '{self.metadata.id}': Shutdown 完成。")
 
+    async def file_prepare(self, file_name: str, mime_type: str) -> str:
+        http_client = await self._get_http_session();url = f"{self.server_url}/api/bot/file/prepare"; data = {"content_type": mime_type,"filename": file_name}
+        request_headers = {"x-api-key": self.api_key,'Content-Type': 'application/json; charset=utf-8','Accept': 'application/json; charset=utf-8'}
+        async with http_client.post(url, headers=request_headers, data=json.dumps(data), timeout=aiohttp.ClientTimeout(total=10)) as resp: 
+            response_text = await resp.text()
+            if resp.status == 200 or resp.status == 201: # 201 Created 也是成功
+                try: response_data = json.loads(response_text); logger.info(f"'{self.metadata.id}' 文件准备成功: {response_data}"); return response_data
+                except json.JSONDecodeError: logger.info(f"'{self.metadata.id}' 文件准备成功(非JSON响应): {response_text[:100]}...")
+            else: logger.error(f"'{self.metadata.id}' 文件准备失败 ({request_headers.get('Content-Type')}): {resp.status} - {response_text[:200]}...")
+            
+    async def upload_file(self, file_id: str, buffer: bytes) -> str:
+        http_client = await self._get_http_session();url = f"{self.server_url}/api/bot/file/upload";request_headers = {"x-api-key": self.api_key,'Accept': 'application/json; charset=utf-8'}
+        data = aiohttp.FormData();data.add_field('file_id', file_id);data.add_field('chunk_data', BytesIO(buffer), content_type='application/octet-stream');data.add_field('chunk_is_last', 'true')
+        async with http_client.post(url, headers=request_headers, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp: 
+            response_text = await resp.text()
+            if resp.status == 200 or resp.status == 201: # 201 Created 也是成功
+                try: response_data = json.loads(response_text); logger.info(f"'{self.metadata.id}' 文件上传成功: {response_data}"); return response_data['path']
+                except json.JSONDecodeError: logger.info(f"'{self.metadata.id}' 文件上传成功(非JSON响应): {response_text[:100]}...")
+            else: logger.error(f"'{self.metadata.id}' 文件上传失败 ({request_headers.get('Content-Type')}): {resp.status} - {response_text[:200]}...")
