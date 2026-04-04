@@ -1,4 +1,9 @@
 name: astrbot_plugin_vocechat
 desc: 一款为 AstrBot 设计的平台适配器插件，用于连接和集成 VoceChat 聊天服务
-author: zhiruizz
+author: HikariFroya
 version: 1.1.0
+changelog: |
+  v1.1.0 (by zhiruizz):
+  - 修复 Platform.__init__() 缺少 event_queue 参数的问题
+  - 适配 AstrBot v4.8.0+ 新版 API
+  - 添加 metadata.yaml 文件以支持网页端安装
