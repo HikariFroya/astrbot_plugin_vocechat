@@ -35,7 +35,7 @@ DEFAULT_CONFIG_TMPL = {
 class VoceChatAdapter(Platform):
 
     def __init__(self, platform_config: dict, platform_settings: dict, event_queue: asyncio.Queue) -> None:
-        super().__init__(event_queue)
+        super().__init__(platform_settings,event_queue)
         self.config = platform_config
         self.settings = platform_settings
         self.server_url = self.config.get("vocechat_server_url", "").rstrip('/')
